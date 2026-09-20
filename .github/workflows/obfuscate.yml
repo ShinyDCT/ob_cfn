@@ -7,6 +7,13 @@
 #   2) 混淆参数每次运行时随机化（而非固定值），保证每日产物不同
 #   3) 产物命名为 _worker.js —— 与仓库内 “CFNext 混淆Pages版.zip”
 #      内部结构一致，可被 Cloudflare Pages 直接以单文件 Worker 运行
+#
+# 2026-09-20 修复（Pages 构建失败）：
+#   - 标识符生成器固定为 hexadecimal：mangled/mangled-shuffled 与
+#     deadCodeInjection 组合会产生“给 const 常量重新赋值”的非法代码
+#     （wrangler/esbuild 构建时报 Cannot assign to ... because it is a constant）
+#   - 新增 esbuild bundle 校验 + 自动重试门禁：与 wrangler 使用相同检查，
+#     校验不通过则用新随机参数重新混淆，最多 5 次，保证提交的产物可部署
 # ============================================================
 name: 🔐 Obfuscate CFNext Worker
 
@@ -44,9 +51,9 @@ jobs:
         with:
           node-version: "latest"
 
-      - name: 📦 Install javascript-obfuscator
+      - name: 📦 Install javascript-obfuscator + esbuild
         run: |
-          npm install javascript-obfuscator --no-fund --no-audit
+          npm install javascript-obfuscator esbuild --no-fund --no-audit
 
       - name: ⬇️ Download latest CFNext plain source
         run: |
@@ -55,7 +62,7 @@ jobs:
             "https://raw.githubusercontent.com/PAICNI/CFNext/main/CFNext%20%E6%98%8E%E6%96%87%E7%89%88.js"
           echo "Downloaded source.js ($(wc -c < source.js) bytes)"
 
-      - name: 🔐 Obfuscate with randomized options
+      - name: 🔐 Obfuscate with randomized options (esbuild-validated)
         run: |
           cat > obfuscate.js <<'EOF'
           const fs = require('fs');
@@ -74,7 +81,7 @@ jobs:
             controlFlowFlatteningThreshold: rnd(0.3, 1),
             deadCodeInjection: chance(0.7),
             deadCodeInjectionThreshold: rnd(0.2, 0.5),
-            identifierNamesGenerator: pick(['hexadecimal', 'mangled', 'mangled-shuffled']),
+            identifierNamesGenerator: 'hexadecimal',
             renameGlobals: false,
             stringArray: true,
             stringArrayEncoding: pick([[], ['base64'], ['rc4']]),
@@ -94,6 +101,22 @@ jobs:
           console.log('Used options: ' + JSON.stringify(options));
           EOF
           node obfuscate.js
+          # 用与 wrangler 相同的 esbuild bundle 校验，失败则换参数重试
+          for attempt in 1 2 3 4 5; do
+            if npx esbuild _worker.js --bundle --format=esm \
+                 --external:cloudflare:sockets --outfile=/dev/null \
+                 --log-level=error 2>esbuild_err.log; then
+              echo "✅ esbuild validation passed (attempt ${attempt})"
+              break
+            fi
+            echo "⚠️ esbuild validation failed (attempt ${attempt}), regenerating with new random parameters..."
+            node obfuscate.js
+            if [ "${attempt}" = "5" ]; then
+              echo "❌ Failed after 5 attempts:"
+              tail -n 10 esbuild_err.log
+              exit 1
+            fi
+          done
 
       - name: ✅ Verify output
         run: |
@@ -106,7 +129,7 @@ jobs:
             echo "❌ export default missing in _worker.js!"
             exit 1
           fi
-          echo "✅ Obfuscation successful"
+          echo "✅ Final checks passed"
 
       - name: 📝 Commit obfuscated code
         uses: stefanzweifel/git-auto-commit-action@v5
