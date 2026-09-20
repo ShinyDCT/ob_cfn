@@ -2,18 +2,20 @@
 # ob_cfn · 每日自动混淆 CFNext 明文版 -> _worker.js
 #
 # 放置位置：ob_cfn 仓库根目录下的 .github/workflows/obfuscate.yml
-# 逻辑等价于 scanda-obf/.github/workflows/obfuscate.yml，差异：
-#   1) 上游源改为 PAICNI/CFNext 的 “CFNext明文版.js”（每日拉取最新）
-#   2) 混淆参数每次运行时随机化（而非固定值），保证每日产物不同
-#   3) 产物命名为 _worker.js —— 与仓库内 “CFNext 混淆Pages版.zip”
-#      内部结构一致，可被 Cloudflare Pages 直接以单文件 Worker 运行
 #
-# 2026-09-20 修复（Pages 构建失败）：
-#   - 标识符生成器固定为 hexadecimal：mangled/mangled-shuffled 与
-#     deadCodeInjection 组合会产生“给 const 常量重新赋值”的非法代码
-#     （wrangler/esbuild 构建时报 Cannot assign to ... because it is a constant）
-#   - 新增 esbuild bundle 校验 + 自动重试门禁：与 wrangler 使用相同检查，
-#     校验不通过则用新随机参数重新混淆，最多 5 次，保证提交的产物可部署
+# 混淆逻辑（2026-09-20 按用户要求调整）：
+#   完全复用 scanda-obf/.github/workflows/obfuscate.yml 的固定参数集
+#   （control-flow-flattening 0.75 / dead-code-injection 0.4 /
+#    hexadecimal 标识符 / string-array rc4 / transform-object-keys /
+#    unicode-escape-sequence / split-strings chunk 5），
+#   不采用 PAICNI/CFNext 自带“混淆版”的浅混淆逻辑
+#   （其产物仍保留大量可读的页面 HTML/JS 与中文文案，易被特征指纹识别）。
+#
+# 与 scanda-obf 参考的差异：
+#   1) 上游源改为 PAICNI/CFNext 的 “CFNext明文版.js”（每日拉取最新）
+#   2) 产物命名为 _worker.js，提交到仓库根目录（Pages 单文件 Worker 约定）
+#   3) 新增 esbuild bundle 校验门禁（与 wrangler 相同的检查）：
+#      杜绝“给 const 常量重新赋值”等非法代码被提交导致 Pages 构建失败
 # ============================================================
 name: 🔐 Obfuscate CFNext Worker
 
@@ -62,74 +64,54 @@ jobs:
             "https://raw.githubusercontent.com/PAICNI/CFNext/main/CFNext%20%E6%98%8E%E6%96%87%E7%89%88.js"
           echo "Downloaded source.js ($(wc -c < source.js) bytes)"
 
-      - name: 🔐 Obfuscate with randomized options (esbuild-validated)
+      - name: 🔐 Obfuscate with scanda-obf parameter set
         run: |
           cat > obfuscate.js <<'EOF'
           const fs = require('fs');
           const JSO = require('javascript-obfuscator');
 
-          const rnd = (min, max, dec = 2) => +(min + Math.random() * (max - min)).toFixed(dec);
-          const chance = (p) => Math.random() < p;
-          const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
           const source = fs.readFileSync('source.js', 'utf8');
 
+          // 与 scanda-obf/.github/workflows/obfuscate.yml 完全一致的参数
           const options = {
             compact: true,
-            simplify: true,
             controlFlowFlattening: true,
-            controlFlowFlatteningThreshold: rnd(0.3, 1),
-            deadCodeInjection: chance(0.7),
-            deadCodeInjectionThreshold: rnd(0.2, 0.5),
+            controlFlowFlatteningThreshold: 0.75,
+            deadCodeInjection: true,
+            deadCodeInjectionThreshold: 0.4,
             identifierNamesGenerator: 'hexadecimal',
             renameGlobals: false,
             stringArray: true,
-            stringArrayEncoding: pick([[], ['base64'], ['rc4']]),
-            stringArrayThreshold: rnd(0.5, 1),
-            rotateStringArray: chance(0.8),
-            shuffleStringArray: chance(0.8),
-            transformObjectKeys: chance(0.6),
-            splitStrings: chance(0.6),
-            splitStringsChunkLength: 5 + Math.floor(Math.random() * 6),
-            numbersToExpressions: chance(0.4),
-            unicodeEscapeSequence: false
+            stringArrayEncoding: ['rc4'],
+            stringArrayThreshold: 0.75,
+            transformObjectKeys: true,
+            unicodeEscapeSequence: true,
+            splitStrings: true,
+            splitStringsChunkLength: 5
           };
 
           const code = JSO.obfuscate(source, options).getObfuscatedCode();
           fs.writeFileSync('_worker.js', code);
           console.log('Obfuscated _worker.js (' + Buffer.byteLength(code) + ' bytes)');
-          console.log('Used options: ' + JSON.stringify(options));
           EOF
           node obfuscate.js
-          # 用与 wrangler 相同的 esbuild bundle 校验，失败则换参数重试
-          for attempt in 1 2 3 4 5; do
-            if npx esbuild _worker.js --bundle --format=esm \
-                 --external:cloudflare:sockets --outfile=/dev/null \
-                 --log-level=error 2>esbuild_err.log; then
-              echo "✅ esbuild validation passed (attempt ${attempt})"
-              break
-            fi
-            echo "⚠️ esbuild validation failed (attempt ${attempt}), regenerating with new random parameters..."
-            node obfuscate.js
-            if [ "${attempt}" = "5" ]; then
-              echo "❌ Failed after 5 attempts:"
-              tail -n 10 esbuild_err.log
-              exit 1
-            fi
-          done
 
-      - name: ✅ Verify output
+      - name: ✅ Verify output (esbuild bundle + export)
         run: |
           if [ ! -s _worker.js ]; then
             echo "❌ _worker.js is empty!"
             exit 1
           fi
+          # 与 Cloudflare Pages/wrangler 相同的 esbuild bundle 校验，
+          # 防止“给 const 常量重新赋值”等非法代码导致构建失败
+          npx esbuild _worker.js --bundle --format=esm \
+            --external:cloudflare:sockets --outfile=/dev/null --log-level=error
           # 必须保留模块导出，否则 Worker 无法运行
           if ! grep -q "export default" _worker.js; then
             echo "❌ export default missing in _worker.js!"
             exit 1
           fi
-          echo "✅ Final checks passed"
+          echo "✅ Obfuscation verified ($(wc -c < _worker.js) bytes)"
 
       - name: 📝 Commit obfuscated code
         uses: stefanzweifel/git-auto-commit-action@v5
