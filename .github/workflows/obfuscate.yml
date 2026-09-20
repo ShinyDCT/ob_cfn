@@ -1,0 +1,119 @@
+# ============================================================
+# ob_cfn · 每日自动混淆 CFNext 明文版 -> _worker.js
+#
+# 放置位置：ob_cfn 仓库根目录下的 .github/workflows/obfuscate.yml
+# 逻辑等价于 scanda-obf/.github/workflows/obfuscate.yml，差异：
+#   1) 上游源改为 PAICNI/CFNext 的 “CFNext明文版.js”（每日拉取最新）
+#   2) 混淆参数每次运行时随机化（而非固定值），保证每日产物不同
+#   3) 产物命名为 _worker.js —— 与仓库内 “CFNext 混淆Pages版.zip”
+#      内部结构一致，可被 Cloudflare Pages 直接以单文件 Worker 运行
+# ============================================================
+name: 🔐 Obfuscate CFNext Worker
+
+on:
+  schedule:
+    # 每个自然日自动执行：UTC 22:00 = 北京时间 06:00
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+# 授予本工作流对仓库内容的写权限（GITHUB_TOKEN）
+# 这是定时任务能自动提交的关键：缺少此权限 push 会失败
+permissions:
+  contents: write
+
+# 防止定时触发与手动触发重叠执行
+concurrency:
+  group: obfuscate-cfnext
+  cancel-in-progress: false
+
+jobs:
+  obfuscate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # persist-credentials 默认为 true：
+          # GITHUB_TOKEN 已写入 git 凭据，供后续 commit/push 使用
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
+
+      - name: 📦 Install javascript-obfuscator
+        run: |
+          npm install javascript-obfuscator --no-fund --no-audit
+
+      - name: ⬇️ Download latest CFNext plain source
+        run: |
+          # 该地址与上游源码内 UPDATE_RAW_URL 完全一致，已实测可下载
+          curl -sL -o source.js \
+            "https://raw.githubusercontent.com/PAICNI/CFNext/main/CFNext%20%E6%98%8E%E6%96%87%E7%89%88.js"
+          echo "Downloaded source.js ($(wc -c < source.js) bytes)"
+
+      - name: 🔐 Obfuscate with randomized options
+        run: |
+          cat > obfuscate.js <<'EOF'
+          const fs = require('fs');
+          const JSO = require('javascript-obfuscator');
+
+          const rnd = (min, max, dec = 2) => +(min + Math.random() * (max - min)).toFixed(dec);
+          const chance = (p) => Math.random() < p;
+          const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+          const source = fs.readFileSync('source.js', 'utf8');
+
+          const options = {
+            compact: true,
+            simplify: true,
+            controlFlowFlattening: true,
+            controlFlowFlatteningThreshold: rnd(0.3, 1),
+            deadCodeInjection: chance(0.7),
+            deadCodeInjectionThreshold: rnd(0.2, 0.5),
+            identifierNamesGenerator: pick(['hexadecimal', 'mangled', 'mangled-shuffled']),
+            renameGlobals: false,
+            stringArray: true,
+            stringArrayEncoding: pick([[], ['base64'], ['rc4']]),
+            stringArrayThreshold: rnd(0.5, 1),
+            rotateStringArray: chance(0.8),
+            shuffleStringArray: chance(0.8),
+            transformObjectKeys: chance(0.6),
+            splitStrings: chance(0.6),
+            splitStringsChunkLength: 5 + Math.floor(Math.random() * 6),
+            numbersToExpressions: chance(0.4),
+            unicodeEscapeSequence: false
+          };
+
+          const code = JSO.obfuscate(source, options).getObfuscatedCode();
+          fs.writeFileSync('_worker.js', code);
+          console.log('Obfuscated _worker.js (' + Buffer.byteLength(code) + ' bytes)');
+          console.log('Used options: ' + JSON.stringify(options));
+          EOF
+          node obfuscate.js
+
+      - name: ✅ Verify output
+        run: |
+          if [ ! -s _worker.js ]; then
+            echo "❌ _worker.js is empty!"
+            exit 1
+          fi
+          # 必须保留模块导出，否则 Worker 无法运行
+          if ! grep -q "export default" _worker.js; then
+            echo "❌ export default missing in _worker.js!"
+            exit 1
+          fi
+          echo "✅ Obfuscation successful"
+
+      - name: 📝 Commit obfuscated code
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: "🔐 Auto-obfuscate: update CFNext worker [skip ci]"
+          # 使用 GitHub 机器人身份提交，避免使用个人账号凭据
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          file_pattern: "_worker.js"
+          push_options: "--force-with-lease"
