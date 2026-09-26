@@ -8,14 +8,14 @@
 #   （control-flow-flattening 0.75 / dead-code-injection 0.4 /
 #    hexadecimal 标识符 / string-array rc4 / transform-object-keys /
 #    unicode-escape-sequence / split-strings chunk 5），
-#   不采用 PAICNI/CFNext 自带“混淆版”的浅混淆逻辑
+#   不采用 PAICNI/CFNext 自带"混淆版"的浅混淆逻辑
 #   （其产物仍保留大量可读的页面 HTML/JS 与中文文案，易被特征指纹识别）。
 #
 # 与 scanda-obf 参考的差异：
-#   1) 上游源改为 PAICNI/CFNext 的 “CFNext明文版.js”（每日拉取最新）
+#   1) 上游源改为 PAICNI/CFNext 的 "CFNext明文版.js"（每日拉取最新）
 #   2) 产物命名为 _worker.js，提交到仓库根目录（Pages 单文件 Worker 约定）
 #   3) 新增 esbuild bundle 校验门禁（与 wrangler 相同的检查）：
-#      杜绝“给 const 常量重新赋值”等非法代码被提交导致 Pages 构建失败
+#      杜绝"给 const 常量重新赋值"等非法代码被提交导致 Pages 构建失败
 # ============================================================
 name: 🔐 Obfuscate CFNext Worker
 
@@ -103,7 +103,7 @@ jobs:
             exit 1
           fi
           # 与 Cloudflare Pages/wrangler 相同的 esbuild bundle 校验，
-          # 防止“给 const 常量重新赋值”等非法代码导致构建失败
+          # 防止"给 const 常量重新赋值"等非法代码导致构建失败
           npx esbuild _worker.js --bundle --format=esm \
             --external:cloudflare:sockets --outfile=/dev/null --log-level=error
           # 必须保留模块导出，否则 Worker 无法运行
@@ -117,7 +117,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
-          commit_message: "🔐 Auto-obfuscate: update CFNext worker [skip ci]"
+          commit_message: "🔐 Auto-obfuscate: update CFNext worker"
           # 使用 GitHub 机器人身份提交，避免使用个人账号凭据
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           file_pattern: "_worker.js"
