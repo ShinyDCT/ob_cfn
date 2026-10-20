@@ -12,7 +12,9 @@
 #   （其产物仍保留大量可读的页面 HTML/JS 与中文文案，易被特征指纹识别）。
 #
 # 与 scanda-obf 参考的差异：
-#   1) 上游源改为 PAICNI/CFNext 的 "CFNext明文版.js"（每日拉取最新）
+#   1) 上游源改为 PAICNI/CFNext 的 "CFNext-明文版.js"（每日拉取最新）
+#      注：2026-10 上游把文件名从 "CFNext 明文版.js"（空格）改名为
+#      "CFNext-明文版.js"（连字符），旧 URL 已 404，故此处同步更新。
 #   2) 产物命名为 _worker.js，提交到仓库根目录（Pages 单文件 Worker 约定）
 #   3) 新增 esbuild bundle 校验门禁（与 wrangler 相同的检查）：
 #      杜绝"给 const 常量重新赋值"等非法代码被提交导致 Pages 构建失败
@@ -59,10 +61,17 @@ jobs:
 
       - name: ⬇️ Download latest CFNext plain source
         run: |
-          # 该地址与上游源码内 UPDATE_RAW_URL 完全一致，已实测可下载
-          curl -sL -o source.js \
-            "https://raw.githubusercontent.com/PAICNI/CFNext/main/CFNext%20%E6%98%8E%E6%96%87%E7%89%88.js"
-          echo "Downloaded source.js ($(wc -c < source.js) bytes)"
+          # 上游文件名 2026-10 已从 "CFNext 明文版.js"（空格）改名为
+          # "CFNext-明文版.js"（连字符）。curl -f 让 HTTP 错误（含 404）
+          # 直接失败，避免把 404 HTML 当源码继续混淆。
+          curl -fSL -o source.js \
+            "https://raw.githubusercontent.com/PAICNI/CFNext/main/CFNext-%E6%98%8E%E6%96%87%E7%89%88.js"
+          SIZE=$(wc -c < source.js)
+          echo "Downloaded source.js (${SIZE} bytes)"
+          if [ "${SIZE}" -lt 100000 ]; then
+            echo "::error::source.js 只有 ${SIZE} 字节，远小于上游明文版预期（约 360KB），下载异常"
+            exit 1
+          fi
 
       - name: 🔐 Obfuscate with scanda-obf parameter set
         run: |
